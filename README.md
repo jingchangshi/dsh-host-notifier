@@ -216,3 +216,5 @@ Remove `debugFile` once verified; the installed row keeps it off.
   with the reason in the body.
 - The row is host-only: it adds no client bundle, no tools, and no model-visible
   surface.
+- ntfy carries the title in an HTTP header, which is Latin-1 only: a non-Latin-1
+  session title fails that channel, visible only in the Host log. Others use the UTF-8 body.
