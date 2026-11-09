@@ -23,6 +23,7 @@
 import { createHmac } from 'node:crypto'
 import { appendFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
+import { hostname, userInfo } from 'node:os'
 
 /** Resolve optional peers (undici) from this plugin's own directory. */
 const nodeRequire = createRequire(import.meta.url)
@@ -108,6 +109,12 @@ export interface Config {
   readonly events?: readonly EventKind[]
   /** Include subagent sessions; defaults to false. */
   readonly includeSubagents?: boolean
+  /**
+   * Friendly name for this server, shown in every notification. Defaults to
+   * `os.hostname()`. Set it when hostnames are opaque so deployments can be
+   * told apart.
+   */
+  readonly serverName?: string
   /** Log instead of sending (safe first run); defaults to false. */
   readonly logOnly?: boolean
   /**
@@ -143,10 +150,26 @@ interface SessionEventLike {
 interface ContextLike {
   on(event: string, listener: (...args: any[]) => unknown): () => unknown
   effect(factory: () => () => void, label?: string): unknown
+  /** Optional service lookup; hosts without web services may omit it. */
+  get?(service: string): unknown
   logger?: {
     info?(...args: unknown[]): void
     warn(...args: unknown[]): void
   }
+}
+
+/** Identity of the Host process, attached to every notification. */
+interface ServerIdentity {
+  /** Friendly name: config `serverName`, else the OS hostname. */
+  readonly name: string
+  /** OS user running the Host, when resolvable. */
+  readonly user?: string
+  /** Public Web GUI URL, when the deployment advertises one. */
+  readonly url?: string
+  /** Listener port, when known. */
+  readonly port?: number
+  /** Display tag: `name`, or `name:port` when the port is known. */
+  readonly tag: string
 }
 
 interface Message {
@@ -155,6 +178,7 @@ interface Message {
   readonly text: string
   readonly sessionId: string
   readonly cwd: string | undefined
+  readonly server: ServerIdentity
 }
 
 /** Cordis plugin name used by loader diagnostics. */
@@ -318,6 +342,150 @@ function sessionLabel(session: SessionLike, title: string | undefined): string {
   return shortId(session.id)
 }
 
+/** Trimmed string when `value` is a non-empty string. */
+function nonEmpty(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const trimmed = value.trim()
+  return trimmed === '' ? undefined : trimmed
+}
+
+/** Friendly server name: config `serverName`, else the OS hostname. */
+function resolveServerName(configured: string | undefined): string {
+  const explicit = nonEmpty(configured)
+  if (explicit !== undefined) return explicit
+  try {
+    const name = nonEmpty(hostname())
+    if (name !== undefined) return name
+  } catch {
+    // A host without a resolvable hostname falls back to the environment.
+  }
+  return nonEmpty(process.env.HOSTNAME) ?? 'unknown-host'
+}
+
+/** OS user running the Host, when resolvable. */
+function resolveServerUser(): string | undefined {
+  try {
+    const user = nonEmpty(userInfo().username)
+    if (user !== undefined) return user
+  } catch {
+    // userInfo() throws when this process has no matching passwd entry.
+  }
+  return nonEmpty(process.env.USER) ?? nonEmpty(process.env.USERNAME)
+}
+
+/** Read one optional Host service without assuming the row exists. */
+function service(ctx: ContextLike, name: string): unknown {
+  try {
+    return ctx.get?.(name)
+  } catch {
+    return undefined
+  }
+}
+
+/** Read one string member from a service method, tolerating absence and throws. */
+function serviceValue(target: unknown, method: string): string | undefined {
+  if (!isRecord(target)) return undefined
+  try {
+    // Even the property read can throw (accessor or proxy), so it stays guarded.
+    const fn = target[method]
+    if (typeof fn !== 'function') return undefined
+    return nonEmpty((fn as () => unknown).call(target))
+  } catch {
+    // Services throw before their listener binds; the tag just stays shorter.
+    return undefined
+  }
+}
+
+/** Drop the brackets the URL parser keeps around an IPv6 hostname. */
+function unbracketed(host: string): string {
+  return host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host
+}
+
+/**
+ * Whether a URL hostname only ever reaches this machine. Such a URL is never
+ * appended to a notification: every server prints `127.0.0.1` or `localhost`,
+ * so it cannot tell deployments apart. The unspecified addresses `0.0.0.0` and
+ * `::` are treated the same way: they name "some local interface", never a
+ * particular host.
+ */
+function isLoopbackHost(hostname: string): boolean {
+  const host = unbracketed(hostname.toLowerCase()).replace(/\.+$/, '')
+  if (host === 'localhost') return true
+  if (host === '0.0.0.0' || host === '::') return true
+  if (/^127(?:\.\d{1,3}){3}$/.test(host)) return true
+  if (/^(?:0{1,4}:){7}0{0,3}1$/.test(host) || host === '::1') return true
+  // IPv4-mapped forms: `::ffff:127.0.0.1` (dotted) and `::ffff:7f00:1` (hex,
+  // which is how the URL parser canonicalizes the dotted spelling).
+  const mapped = /^(?:0{1,4}:){5}ffff:(.+)$/.exec(host) ?? /^::ffff:(.+)$/.exec(host)
+  if (mapped === null) return false
+  const tail = mapped[1]
+  if (/^127(?:\.\d{1,3}){3}$/.test(tail)) return true
+  const hex = /^([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(tail)
+  return hex !== null && (Number.parseInt(hex[1], 16) >> 8) === 0x7f
+}
+
+/**
+ * A candidate URL worth printing: absolute `http:`/`https:` on a host that is
+ * not loopback. Anything malformed, non-HTTP, or loopback counts as absent.
+ */
+function publicUrl(candidate: string | undefined): string | undefined {
+  if (candidate === undefined) return undefined
+  try {
+    const url = new URL(candidate)
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return undefined
+    return isLoopbackHost(url.hostname) ? undefined : candidate
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Public Web GUI URL worth showing, if any. The webApp service answers with the
+ * configured `publicUrl` and otherwise repeats the listener origin, and
+ * `DSH_WEB_URL` carries that same loopback origin by default; both sources go
+ * through {@link publicUrl}, so a loopback or malformed URL is simply absent.
+ */
+function resolveServerUrl(ctx: ContextLike): string | undefined {
+  return publicUrl(serviceValue(service(ctx, 'webApp'), 'getAdvertisedUrl'))
+    ?? publicUrl(nonEmpty(process.env.DSH_WEB_URL))
+}
+
+/** Listener port: `webServer.port` when bound, else the URL's explicit port. */
+function resolveServerPort(ctx: ContextLike): number | undefined {
+  const server = service(ctx, 'webServer')
+  try {
+    if (isRecord(server)) {
+      const port: unknown = server.port
+      if (typeof port === 'number' && Number.isFinite(port) && port > 0) return port
+    }
+  } catch {
+    // An unbound listener has no readable port yet.
+  }
+  const url = resolveServerUrl(ctx)
+  if (url === undefined) return undefined
+  try {
+    const port = Number(new URL(url).port)
+    return Number.isFinite(port) && port > 0 ? port : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/** Identity of the Host process, derived from config and whatever services exist. */
+function resolveServer(rawConfig: Config, ctx: ContextLike): ServerIdentity {
+  const name = resolveServerName(rawConfig.serverName)
+  const user = resolveServerUser()
+  const url = resolveServerUrl(ctx)
+  const port = resolveServerPort(ctx)
+  return {
+    name,
+    ...user === undefined ? {} : { user },
+    ...url === undefined ? {} : { url },
+    ...port === undefined ? {} : { port },
+    tag: port === undefined ? name : `${name}:${port}`,
+  }
+}
+
 function displayKind(kind: EventKind): string {
   switch (kind) {
     case 'completed': return '会话完成'
@@ -391,6 +559,12 @@ async function deliver(
           text: message.text,
           sessionId: message.sessionId,
           cwd: message.cwd,
+          server: {
+            name: message.server.name,
+            user: message.server.user,
+            url: message.server.url,
+            port: message.server.port,
+          },
           time: Date.now(),
         }),
         signal,
@@ -522,7 +696,8 @@ export function apply(ctx: ContextLike, rawConfig: Config = {}): void {
       record(`proxy-unavailable ${String(error)}`)
     }
   }
-  const active = `[host-notifier] active: events=${events.join(',')} channels=${deliveryChannels.map(c => c.type).join(',')}`
+  const server = resolveServer(rawConfig, ctx)
+  const active = `[host-notifier] active: server=${server.tag} events=${events.join(',')} channels=${deliveryChannels.map(c => c.type).join(',')}`
   log(active)
   record(active)
 
@@ -530,10 +705,13 @@ export function apply(ctx: ContextLike, rawConfig: Config = {}): void {
     if (!events.includes(kind)) return
     if (!includeSubagents && session.header.origin === 'subagent') return
     const cwd = typeof session.header.cwd === 'string' ? session.header.cwd : undefined
-    const title = `DSH · ${sessionLabel(session, titles.get(session.id))}`
-    const text = `${displayKind(kind)}${detail === '' ? '' : ` · ${detail}`}${cwd === undefined ? '' : `\n${cwd}`}\n${shortId(session.id)}`
-    const message: Message = { kind, title, text, sessionId: session.id, cwd }
-    record(`${kind} ${session.id} ${text.replace(/\n/g, ' | ')}`)
+    const title = `[${server.tag}] DSH · ${sessionLabel(session, titles.get(session.id))}`
+    const identity = `${server.user === undefined ? '' : `${server.user}@`}${server.tag}`
+      + `${server.url === undefined ? '' : ` · ${server.url}`} · ${shortId(session.id)}`
+    const text = `${displayKind(kind)}${detail === '' ? '' : ` · ${detail}`}`
+      + `${cwd === undefined ? '' : `\n${cwd}`}\n${identity}`
+    const message: Message = { kind, title, text, sessionId: session.id, cwd, server }
+    record(`${kind} ${server.tag} ${session.id} ${text.replace(/\n/g, ' | ')}`)
     const targets = deliveryChannels.filter(channel => channel.events === undefined || channel.events.includes(kind))
     for (const channel of targets) {
       void deliver(channel, message, timeoutMs, doFetch).catch((error: unknown) => {
