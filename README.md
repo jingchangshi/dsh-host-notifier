@@ -324,6 +324,14 @@ npm install       # only needed for the proxy path (undici) while testing by han
 `dist/index.js` is committed so a git install runs as-is. After editing
 `index.ts`, rebuild and commit both files.
 
+The rebuild is wired to `prepublishOnly`, not `prepack`. A git-hosted package
+is prepared by running its build scripts, and pnpm refuses those until they
+appear in the profile's `allowBuilds` — so a `prepack` here makes
+`dsh plugin add <git URL>` fail with `ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED`
+before the plugin is ever installed. `prepublishOnly` never runs on an
+install, which keeps the published tarball built without making git installs
+depend on a build approval.
+
 ### Local checkouts
 
 Installing your working copy with the `file:` form does **not** run the profile
