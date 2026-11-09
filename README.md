@@ -11,13 +11,13 @@ laptop sleeps, or the SSH tunnel drops.
   (`node:crypto`, `node:fs`, `node:module`, `node:os`); nothing from this checkout.
 - Wiring: inserted by `~/.dsh/profiles/web/cordis.patch.yml` as a `file://` plugin row.
 - Events: `turn/end` (completed / error), `ask_user_question` (question), `approval/asked` (approval).
-- Channels: `ntfy`, `bark`, `telegram`, `webhook`, `log`.
+- Channels: `ntfy`, `bark`, `telegram`, `serverchan`, `dingtalk`, `feishu`, `webhook`, `log`.
 
 ## Current state
 
-Installed with `logOnly: true`: the plugin logs each notification to the
-`dsh-web` Host log and sends nothing. This is the safe first run — verify the
-wiring in the log, then configure one channel.
+Start with `logOnly: true`: the plugin then logs each notification to the
+`dsh-web` Host log and sends nothing. Verify the wiring in the log, configure one
+channel, and set `logOnly: false`.
 
 ## Notification format
 
