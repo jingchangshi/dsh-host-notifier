@@ -25,9 +25,46 @@ import { createHmac } from 'node:crypto'
 import { appendFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { hostname, userInfo } from 'node:os'
+import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 
-/** Resolve optional peers (undici) from this plugin's own directory. */
-const nodeRequire = createRequire(import.meta.url)
+/** The slice of `undici` the proxy path uses. */
+                        
+                                                                                         
+                                            
+ 
+
+/**
+ * Load the optional `undici` package for the proxy path.
+ *
+ * Its normal home is this package's own `node_modules`, which every install that
+ * resolves dependencies creates because `undici` is a declared dependency — a
+ * registry name, a tarball, a git URL, and a `file:` local path all do.
+ *
+ * The second anchor exists for the other local-path shape: `dsh plugin add
+ * /path/to/checkout` with no `file:` prefix records a pnpm `link:`, which
+ * symlinks this directory in place and installs no dependencies at all. There
+ * the profile directory that resolved this plugin holds `undici` instead.
+ * Both anchors are attempts, never assumptions; the caller degrades to a direct
+ * request when neither resolves.
+ * @param ctx - Host context, queried for the launcher's `profileContext`.
+ * @returns the `undici` module namespace.
+ */
+function loadUndici(ctx             )          {
+  const anchors = [import.meta.url]
+  const profile = service(ctx, 'profileContext')
+  const profileDir = isRecord(profile) && typeof profile.dir === 'string' ? profile.dir : undefined
+  if (profileDir !== undefined) anchors.push(pathToFileURL(join(profileDir, 'package.json')).href)
+  let failure         
+  for (const anchor of anchors) {
+    try {
+      return createRequire(anchor)('undici')
+    } catch (error) {
+      failure = error
+    }
+  }
+  throw failure
+}
 
 /** Notifiable event classes. */
                                                                 
@@ -683,18 +720,30 @@ export function apply(ctx             , rawConfig         = {})       {
   const proxy = typeof rawConfig.proxy === 'string' && rawConfig.proxy !== '' ? rawConfig.proxy : undefined
   let doFetch            = (url, init) => globalThis.fetch(url, init)
   if (proxy !== undefined) {
+    // Two independent failures, reported separately: the package cannot be
+    // resolved, or it resolved and the configured proxy is unusable. Collapsing
+    // them once blamed a typo'd `proxy` on a missing package, which for the
+    // mainland-China Telegram case (where direct delivery cannot work) reads as
+    // "notifications are fine" while they silently never arrive.
+    let undici                          
     try {
-      const undici = nodeRequire('undici')     
-                                                                                               
-                                                  
-       
-      const dispatcher = new undici.ProxyAgent(proxy)
-      doFetch = (url, init) => undici.fetch(url, { ...init, dispatcher })
-      log(`[host-notifier] proxy: ${proxy}`)
-      record(`proxy ${proxy}`)
+      undici = loadUndici(ctx)                
     } catch (error) {
       ctx.logger?.warn(`[host-notifier] proxy requested but undici is unavailable; sending directly: ${String(error)}`)
       record(`proxy-unavailable ${String(error)}`)
+    }
+    if (undici !== undefined) {
+      // Captured as a const so the closure below keeps the narrowed type.
+      const loaded = undici
+      try {
+        const dispatcher = new loaded.ProxyAgent(proxy)
+        doFetch = (url, init) => loaded.fetch(url, { ...init, dispatcher })
+        log(`[host-notifier] proxy: ${proxy}`)
+        record(`proxy ${proxy}`)
+      } catch (error) {
+        ctx.logger?.warn(`[host-notifier] invalid proxy ${JSON.stringify(proxy)}: undici loaded but ProxyAgent rejected it; sending directly: ${String(error)}`)
+        record(`proxy-invalid ${JSON.stringify(proxy)} ${String(error)}`)
+      }
     }
   }
   const server = resolveServer(rawConfig, ctx)
