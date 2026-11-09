@@ -1,0 +1,56 @@
+# The dsh-host-notifier bundle patch: one row, inserted over the profile root.
+#
+# This file is the package's entire substance. `dsh plugin --profile <name> add`
+# installs the package and selects this layer; a profile's own
+# cordis.patch.yml addresses the row by id `dsh-host-notifier` to configure or
+# disable it (the later layer wins).
+#
+# `name` is a module specifier resolved from the profile: this package's own
+# entry point, compiled to dist/index.js. That is why an installed bundle can
+# expose the plugin it ships.
+
+- insert:
+    - id: dsh-host-notifier
+      name: dsh-host-notifier
+      config:
+        # Safe first run: log every notification to the Host log, send nothing.
+        # Configure a channel below, then set this to false.
+        logOnly: true
+
+        # Leave `channels` out and the plugin reads DSH_NOTIFY_CHANNELS
+        # (a JSON array of these objects), keeping secrets out of the profile.
+        # Otherwise uncomment one block, or list several:
+        #
+        # channels:
+        #   - type: ntfy
+        #     topic: your-secret-topic
+        #     url: https://ntfy.sh
+        #     # token: tk_xxx        # only for protected topics
+        #   - type: bark
+        #     key: your-bark-key
+        #   - type: telegram
+        #     botToken: "123456:ABC-DEF"
+        #     chatId: "123456789"
+        #   - type: serverchan
+        #     sendKey: SCT123456Txxxxxxxx
+        #   - type: dingtalk
+        #     url: https://oapi.dingtalk.com/robot/send?access_token=...
+        #     # secret: SEC...       # optional, when the robot uses 加签
+        #   - type: feishu
+        #     url: https://open.feishu.cn/open-apis/bot/v2/hook/...
+        #     # secret: xxxxxx       # optional, when the bot uses 签名校验
+        #   - type: webhook
+        #     url: https://example.com/dsh-hook
+        #   - type: log
+
+        # Friendly name shown in every notification; defaults to os.hostname().
+        # serverName: prod-a
+        # HTTP proxy for delivery only (needs the bundled undici); models and
+        # tools are unaffected.
+        # proxy: http://127.0.0.1:17890
+        # Per-request timeout.
+        # timeoutMs: 5000
+        # Also report subagent sessions.
+        # includeSubagents: false
+        # Append one trace line per activation/attempt, for verification.
+        # debugFile: /tmp/dsh-host-notifier.debug

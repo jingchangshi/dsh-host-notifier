@@ -1,9 +1,35 @@
 {
   "name": "dsh-host-notifier",
   "version": "1.0.0",
-  "private": true,
+  "description": "Host-side DSH plugin: push session completed/error/question/approval notifications to ntfy, Bark, Telegram, ServerChan, DingTalk, Feishu, or a webhook",
   "type": "module",
+  "license": "MIT",
+  "exports": {
+    ".": "./dist/index.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist/index.js",
+    "index.ts",
+    "build.mjs",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "node build.mjs",
+    "prepack": "node build.mjs"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
   "dependencies": {
     "undici": "^8.12.3"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@github.com/jingchangshi/dsh-host-notifier.git"
   }
 }
